@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DELISOGA — One-time setup</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1F1B16; background: #FAF7F2; }
+    h1 { color: #1F1B16; font-size: 24px; }
+    pre { background: #fff; border: 1px solid #E9E6E0; border-radius: 12px; padding: 16px; font-size: 13px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .btn { display: inline-block; background: #1F1B16; color: #FAF7F2; padding: 12px 24px; border-radius: 999px; border: 0; cursor: pointer; font-size: 15px; font-weight: 500; }
+    .btn:hover { background: #332E26; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ok { color: #5F7454; }
+    .err { color: #b91c1c; }
+    .muted { color: #6F685B; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>DELISOGA — one-time setup</h1>
+  <p class="muted">Sign in once and seed <code>/admins/&lt;uid&gt;</code> + <code>/settings/site</code> in Firestore.</p>
+  <p>Email: <strong id="email">mrabdullah1028@gmail.com</strong></p>
+  <p>Password: <input id="pw" type="password" placeholder="Abdullah1028@" style="padding:8px 12px;border:1px solid #E9E6E0;border-radius:8px;font-size:14px;" /></p>
+  <button class="btn" id="run">Run setup</button>
+  <pre id="out">Click "Run setup" to begin.</pre>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js';
+    import { getAuth, signInWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
+    import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js';
+
+    const cfg = {
+      apiKey: 'AIzaSyAzhLuwCAXjJOdPYCM2bOsWv3SQJKUpqyA',
+      authDomain: 'delisoga-6d124.firebaseapp.com',
+      projectId: 'delisoga-6d124',
+      storageBucket: 'delisoga-6d124.firebasestorage.app',
+      messagingSenderId: '308643934737',
+      appId: '1:308643934737:web:d5b50e776dcfa2f0ef37b0',
+    };
+
+    const app = initializeApp(cfg);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const out = document.getElementById('out');
+    const log = (m) => { out.textContent += '\n' + m; };
+    const clear = () => { out.textContent = ''; };
+
+    document.getElementById('run').onclick = async () => {
+      clear();
+      const pw = document.getElementById('pw').value || 'Abdullah1028@';
+      const email = 'mrabdullah1028@gmail.com';
+      const btn = document.getElementById('run');
+      btn.disabled = true;
+      try {
+        log('1) Signing in…');
+        const cred = await signInWithEmailAndPassword(auth, email, pw);
+        const uid = cred.user.uid;
+        log('   OK uid=' + uid);
+
+        log('2) Creating /admins/' + uid + ' …');
+        const adminRef = doc(db, 'admins', uid);
+        const adminSnap = await getDoc(adminRef);
+        if (adminSnap.exists()) {
+          log('   already exists, skipping create');
+        } else {
+          await setDoc(adminRef, { email, role: 'admin', createdAt: serverTimestamp() });
+          log('   OK created');
+        }
+
+        log('3) Seeding /settings/site …');
+        const siteRef = doc(db, 'settings', 'site');
+        await setDoc(siteRef, {
+          brand: {
+            name: 'DELISOGA',
+            tagline: 'Premium Glassware for Everyday Rituals',
+            description: 'A premium glass jar with a natural bamboo lid and a reusable glass straw — designed for water, juices, iced coffee, smoothies and the moments in between.',
+          },
+          product: {
+            name: 'Glass Jar with Bamboo Lid & Glass Straw',
+            sku: 'DS-GLASS-JAR-01',
+            unitPrice: 1000,
+            deliveryCharge: 250,
+            freeDeliveryMinQty: 2,
+            inStock: true,
+            stockNote: 'In stock — ready to ship',
+          },
+          offer: {
+            headline: 'Free delivery on 2 or more jars',
+            subtext: 'Order 1 jar at PKR 1,000. Order 2+ jars and delivery is on us.',
+          },
+          contact: {
+            whatsapp: '+923279500025',
+            phone: '+923279500025',
+            email: 'info.abdullah1027@gmail.com',
+            address: 'Faisalabad, Pakistan',
+            businessHours: 'Mon–Sat, 10:00–19:00 PKT',
+          },
+          social: { instagram: '', facebook: '', tiktok: '' },
+          announcement: {
+            enabled: true,
+            text: 'Free delivery across Pakistan on orders of 2 or more jars',
+          },
+          policy: {
+            paymentMethods: ['Cash on Delivery'],
+            shippingNote: 'We currently ship within Pakistan.',
+          },
+        }, { merge: true });
+        log('   OK /settings/site saved (WhatsApp = +923279500025, email = info.abdullah1027@gmail.com, address = Faisalabad)');
+
+        log('\n✅ All done! You can now:');
+        log('   • Open http://localhost:5173/  — footer shows the new contact details');
+        log('   • Open http://localhost:5173/admin — sign in to manage orders, reviews, settings');
+      } catch (e) {
+        log('❌ ERROR: ' + (e?.code || '') + ' ' + (e?.message || e));
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

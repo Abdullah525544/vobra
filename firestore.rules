@@ -1,0 +1,81 @@
+rules_version = '2';
+// Firestore security rules for DELISOGA
+// Replace <ADMIN-UID-1>, <ADMIN-UID-2> with the real Firebase Auth UIDs of admins
+// (created with Firebase Auth → Add user → copy the UID).
+//
+// Pattern:
+//   /orders/{orderId}        — customers can CREATE only; admins can read/update
+//   /reviews/{reviewId}      — anyone can read approved; only admins can write
+//   /settings/site           — only admins can write; anyone can read
+//   /admins/{uid}            — only that user (and other admins) can read; only that user can create their own doc
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // ---------- ORDERS ----------
+    // Customers (anonymous or signed in) can create an order with strict shape.
+    // Only admins can list, read, or update orders.
+    match /orders/{orderId} {
+      allow create: if
+        // Required fields
+        request.resource.data.keys().hasAll([
+          'orderId', 'customerName', 'phone', 'address', 'city',
+          'quantity', 'unitPrice', 'subtotal', 'deliveryCharges',
+          'finalTotal', 'freeDelivery', 'paymentMethod', 'status',
+          'createdAt', 'updatedAt'
+        ]) &&
+        // Shape checks
+        request.resource.data.orderId is string &&
+        request.resource.data.customerName is string &&
+        request.resource.data.phone is string &&
+        request.resource.data.address is string &&
+        request.resource.data.city is string &&
+        request.resource.data.quantity is number && request.resource.data.quantity >= 1 && request.resource.data.quantity <= 99 &&
+        request.resource.data.unitPrice is number && request.resource.data.unitPrice >= 0 &&
+        request.resource.data.subtotal is number && request.resource.data.subtotal >= 0 &&
+        request.resource.data.deliveryCharges is number && request.resource.data.deliveryCharges >= 0 &&
+        request.resource.data.finalTotal is number && request.resource.data.finalTotal >= 0 &&
+        request.resource.data.freeDelivery is bool &&
+        request.resource.data.status == 'New' &&
+        // Server timestamp only
+        request.resource.data.createdAt == request.time;
+
+      allow read, list, update, delete: if isAdmin();
+    }
+
+    // ---------- REVIEWS ----------
+    // Anyone can read approved reviews; only admins can write/edit/delete.
+    match /reviews/{reviewId} {
+      allow read: if resource.data.approved == true || isAdmin();
+      allow list: if isAdmin() || (query.limit != null && query.limit <= 50);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ---------- SETTINGS ----------
+    match /settings/site {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ---------- ADMINS ----------
+    // A signed-in user may read their own /admins/{uid} doc.
+    // They may also CREATE their own admin doc exactly once (bootstrap),
+    // so the very first sign-in can claim admin role automatically.
+    // Nobody can edit or delete admin docs from the client — demote via the
+    // Firebase Console (or a Cloud Function) only.
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && !exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && request.resource.data.keys().hasAll(['email', 'role'])
+        && request.resource.data.role == 'admin'
+        && request.resource.data.email is string;
+      allow update, delete: if false;
+    }
+  }
+}

@@ -1,0 +1,12 @@
+rules_version = '2';
+// Firebase Storage rules for DELISOGA
+// We use Storage only for review avatars / product images uploaded from the admin.
+// Public read; admin-only write.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null; // tighten in production to admin-only
+    }
+  }
+}

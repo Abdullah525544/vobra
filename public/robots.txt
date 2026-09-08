@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /checkout
+Disallow: /thank-you
+Disallow: /cart
+
+Sitemap: https://delisoga.com/sitemap.xml
