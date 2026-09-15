@@ -42,8 +42,21 @@ export const createOrder = async (form, settings) => {
     updatedAt: now,
   };
 
+  // Always mirror to localStorage as a fallback so the ThankYou page can
+  // render without needing to read from Firestore (customers cannot read
+  // /orders/{id} — security rules only allow admin reads).
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    try {
+      const KEY = 'delisoga.orders';
+      const existing = JSON.parse(localStorage.getItem(KEY) || '[]');
+      const dedup = existing.filter((o) => o.id !== order.id && o.orderId !== order.orderId);
+      const next = [order, ...dedup].slice(0, 50);
+      localStorage.setItem(KEY, JSON.stringify(next));
+    } catch { /* ignore */ }
+  }
+
   if (DATA_MODE !== 'live' || !db) {
-    return demoAddOrder(order);
+    return order;
   }
   try {
     const { collection, doc, setDoc, serverTimestamp } = await import('firebase/firestore');
@@ -57,7 +70,7 @@ export const createOrder = async (form, settings) => {
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[orders] createOrder failed, using demo:', e);
-    return demoAddOrder(order);
+    return order;
   }
 };
 

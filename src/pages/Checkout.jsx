@@ -85,7 +85,10 @@ export default function Checkout() {
     try {
       const order = await createOrder(submitForm, settings);
       toast.success('Order placed! Redirecting…');
-      navigate(`/thank-you/${order.orderId}`, { replace: true });
+      // Pass the full order via navigation state so the Thank You page can
+      // render without needing to read it back from Firestore (customers
+      // cannot read /orders/{id} per security rules — only admins can).
+      navigate(`/thank-you/${order.orderId}`, { state: { order }, replace: true });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);

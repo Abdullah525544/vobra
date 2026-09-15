@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useLocation } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { CheckCircle2, Copy, MessageCircle, ArrowRight, Package } from 'lucide-react';
 import { getOrder } from '../lib/orders';
@@ -10,6 +10,7 @@ import Image from '../components/ui/Image';
 
 export default function ThankYou() {
   const { orderId } = useParams();
+  const location = useLocation();
   const { settings } = useSettings();
   const toast = useToast();
   const [order, setOrder] = useState(null);
@@ -17,6 +18,16 @@ export default function ThankYou() {
 
   useEffect(() => {
     let alive = true;
+    // 1) Prefer the order passed via navigation state (no Firestore read needed).
+    //    This avoids the customer read-denied scenario entirely.
+    const passed = location.state && location.state.order;
+    if (passed && (passed.orderId === orderId || passed.id === orderId)) {
+      setOrder(passed);
+      setLoading(false);
+      return;
+    }
+    // 2) Fall back to getOrder (which now reads from localStorage mirror
+    //    if the Firestore read is denied).
     (async () => {
       try {
         const o = await getOrder(orderId);
@@ -26,7 +37,7 @@ export default function ThankYou() {
       }
     })();
     return () => { alive = false; };
-  }, [orderId]);
+  }, [orderId, location.state]);
 
   const copy = () => {
     if (!order) return;
