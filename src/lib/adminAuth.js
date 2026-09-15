@@ -57,13 +57,27 @@ const restSignIn = async (email, password) => {
  * Sync client SDK auth with REST idToken (best effort)
  * ----------------------------------------------------------- */
 const syncClientAuth = async (email, password) => {
-  try {
-    const { signInWithEmailAndPassword } = await import('firebase/auth');
-    await signInWithEmailAndPassword(auth, email, password);
-    return true;
-  } catch {
-    return false; // tolerated — the REST session will still drive admin actions
+  // Try up to 3 times with small backoff — handles transient issues
+  // on cold loads (e.g., the Firebase SDK hasn't finished init).
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const { signInWithEmailAndPassword } = await import('firebase/auth');
+      await signInWithEmailAndPassword(auth, email, password);
+      // Verify the SDK actually has the session
+      if (auth.currentUser && auth.currentUser.email === email) {
+        return true;
+      }
+    } catch (e) {
+      lastErr = e;
+      // eslint-disable-next-line no-console
+      console.warn(`[adminAuth] syncClientAuth attempt ${attempt} failed:`, e?.code, e?.message);
+    }
+    await new Promise((r) => setTimeout(r, 400 * attempt));
   }
+  // eslint-disable-next-line no-console
+  console.warn('[adminAuth] syncClientAuth gave up:', lastErr?.code, lastErr?.message);
+  return false;
 };
 
 /* ------------------------------------------------------------
@@ -116,46 +130,63 @@ const ensureAdminDoc = async (uid, email) => {
 
 /* ------------------------------------------------------------
  * Public: sign in
+ *
+ * Order:
+ *   1) Try client SDK signInWithEmailAndPassword first — this sets
+ *      up the auth state that Firestore security rules check.
+ *   2) If the SDK path fails, fall back to REST for password check,
+ *      then aggressively retry the client SDK to establish session.
+ *   3) If neither path yields a working client SDK session, throw
+ *      a clear error so the UI can show it.
  * ----------------------------------------------------------- */
 export const signInAdmin = async (email, password) => {
   if (!isLive()) {
     return demoAdminSignIn(email, password, { requiredPassword: ADMIN_PASSWORD });
   }
 
-  // 1) Try REST first (most reliable — bypasses any client SDK issues)
-  let restData = null;
+  // 1) Client SDK first — preferred because it establishes the session
+  //    that Firestore rules use to gate /orders reads.
+  try {
+    const { signInWithEmailAndPassword } = await import('firebase/auth');
+    const { doc, getDoc, setDoc, serverTimestamp } = await import('firebase/firestore');
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const uid = cred.user.uid;
+
+    // Make sure /admins/{uid} exists (create if first time)
+    const ref = doc(db, 'admins', uid);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      try {
+        await setDoc(ref, { email: cred.user.email, role: 'admin', createdAt: serverTimestamp() });
+      } catch { /* tolerate — non-fatal */ }
+    }
+    return { uid, email: cred.user.email, isAdmin: true, createdAt: Date.now() };
+  } catch (sdkErr) {
+    // eslint-disable-next-line no-console
+    console.warn('[adminAuth] client SDK signin failed, falling back to REST:', sdkErr?.code, sdkErr?.message);
+  }
+
+  // 2) Fall back to REST for password verification
+  let restData;
   try {
     restData = await restSignIn(email, password);
   } catch (restErr) {
-    // 2) Fall back to client SDK (handles edge cases like network)
-    try {
-      const { signInWithEmailAndPassword } = await import('firebase/auth');
-      const { doc, getDoc, setDoc, serverTimestamp } = await import('firebase/firestore');
-      const cred = await signInWithEmailAndPassword(auth, email, password);
-      const uid = cred.user.uid;
-
-      // Make sure /admins/{uid} exists
-      const ref = doc(db, 'admins', uid);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) {
-        try {
-          await setDoc(ref, { email: cred.user.email, role: 'admin', createdAt: serverTimestamp() });
-        } catch { /* tolerate — non-fatal */ }
-      }
-      return { uid, email: cred.user.email, isAdmin: true, createdAt: Date.now() };
-    } catch (sdkErr) {
-      // Re-throw the most useful error
-      throw restErr;
-    }
+    throw restErr;
   }
-
-  // REST succeeded
   const { localId: uid, email: confirmedEmail } = restData;
 
-  // Sync the client SDK so its auth state matches (best effort)
-  await syncClientAuth(email, password);
+  // 3) Aggressively retry client SDK sync — the REST idToken alone
+  //    cannot drive Firestore reads (rules check client SDK auth).
+  const synced = await syncClientAuth(email, password);
+  if (!synced) {
+    throw new Error(
+      'Sign-in verified but the Firebase client session could not be ' +
+      'established. Please refresh the page and try again. If the issue ' +
+      'persists, open the browser console (F12) for details.'
+    );
+  }
 
-  // Ensure /admins/{uid} exists (uses client SDK first, REST as fallback)
+  // 4) Make sure /admins/{uid} exists
   await ensureAdminDoc(uid, confirmedEmail);
 
   return { uid, email: confirmedEmail, isAdmin: true, createdAt: Date.now() };
