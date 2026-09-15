@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DELISOGA — Firebase Diagnose</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; color: #1F1B16; background: #FAF7F2; }
+    h1 { color: #1F1B16; font-size: 22px; margin-bottom: 4px; }
+    .muted { color: #6F685B; font-size: 13px; margin-bottom: 18px; }
+    pre { background: #fff; border: 1px solid #E9E6E0; border-radius: 12px; padding: 14px; font-size: 12.5px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+    .ok { color: #5F7454; font-weight: 600; }
+    .err { color: #b91c1c; font-weight: 600; }
+    .warn { color: #a16207; font-weight: 600; }
+    .info { color: #1d4ed8; }
+    .btn { display: inline-block; background: #1F1B16; color: #FAF7F2; padding: 10px 20px; border-radius: 999px; border: 0; cursor: pointer; font-size: 14px; font-weight: 500; margin-top: 8px; margin-right: 8px; }
+    .btn:hover { background: #332E26; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { padding: 8px 0; border-bottom: 1px dashed #E9E6E0; }
+    .row:last-child { border-bottom: 0; }
+    code { background: #F3F0EA; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>DELISOGA — Firebase Diagnose</h1>
+  <p class="muted">Checks if Firestore is reachable, rules are enforced, and admin + settings exist. Re-run after any change.</p>
+
+  <button class="btn" id="run">Run diagnose</button>
+  <button class="btn" id="retry">Retry failed only</button>
+  <pre id="out">Click "Run diagnose" to begin.</pre>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js';
+    import {
+      getFirestore, doc, getDoc, collection, getDocs,
+      query, orderBy, limit, enableNetwork, disableNetwork,
+      waitForPendingWrites
+    } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js';
+    import { getAuth, signInAnonymously, signOut } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
+
+    const cfg = {
+      apiKey: 'AIzaSyAzhLuwCAXjJOdPYCM2bOsWv3SQJKUpqyA',
+      authDomain: 'delisoga-6d124.firebaseapp.com',
+      projectId: 'delisoga-6d124',
+      storageBucket: 'delisoga-6d124.firebasestorage.app',
+      messagingSenderId: '308643934737',
+      appId: '1:308643934737:web:d5b50e776dcfa2f0ef37b0',
+    };
+
+    const app = initializeApp(cfg);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    const out = document.getElementById('out');
+    const log = (m) => { out.textContent += '\n' + m; };
+    const clear = () => { out.textContent = ''; };
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    async function waitForConnection(maxMs = 8000) {
+      log('   ⏳ Waiting for Firestore connection…');
+      const start = Date.now();
+      let lastErr = null;
+      while (Date.now() - start < maxMs) {
+        try {
+          // A tiny no-op-ish read that should succeed when online
+          await getDoc(doc(db, 'settings', '__health__'));
+          log('   <span class="ok">[OK]</span> Connected to Firestore (' + (Date.now() - start) + ' ms)');
+          return true;
+        } catch (e) {
+          lastErr = e;
+          if (!(e.code === 'unavailable' || (e.message || '').includes('offline'))) {
+            // Some other error — connection is fine, rule denied, etc.
+            log('   <span class="info">[i]</span> Connection probe: ' + e.code + ' ' + e.message);
+            return true;
+          }
+          await sleep(400);
+        }
+      }
+      log('   <span class="err">[FAIL]</span> Could not connect after ' + maxMs + ' ms');
+      log('   Last error: ' + (lastErr?.code || '') + ' ' + (lastErr?.message || lastErr));
+      return false;
+    }
+
+    const results = {};
+
+    async function test1_SettingsRead() {
+      log('\n▶ Test 1 — Read /settings/site (public read allowed by rules)');
+      try {
+        await enableNetwork(db);
+        const siteSnap = await getDoc(doc(db, 'settings', 'site'));
+        if (siteSnap.exists()) {
+          const data = siteSnap.data();
+          log('   <span class="ok">[OK]</span> /settings/site EXISTS');
+          log('   • brand.name        = ' + (data.brand?.name || '(missing)'));
+          log('   • product.name      = ' + (data.product?.name || '(missing)'));
+          log('   • product.unitPrice = ' + (data.product?.unitPrice ?? '(missing)'));
+          log('   • contact.whatsapp  = ' + (data.contact?.whatsapp || '(missing)'));
+          log('   • contact.email     = ' + (data.contact?.email || '(missing)'));
+          log('   • contact.address   = ' + (data.contact?.address || '(missing)'));
+          results.t1 = 'PASS';
+          return true;
+        } else {
+          log('   <span class="warn">[!!]</span> /settings/site does NOT exist');
+          log('   → Run http://localhost:5173/setup.html to seed it');
+          results.t1 = 'NO_DOC';
+          return false;
+        }
+      } catch (e) {
+        log('   <span class="err">[FAIL]</span> ' + (e.code || '') + ' ' + (e.message || e));
+        if ((e.message || '').includes('offline') || e.code === 'unavailable') {
+          log('   → SDK could not reach Firestore. Wait a moment and retry.');
+        } else if (e.code === 'permission-denied' || (e.message || '').includes('permission')) {
+          log('   → Rules are deployed but /settings/site read is NOT public.');
+          log('     Check: settings read rule should be `allow read: if true;`');
+        }
+        results.t1 = 'FAIL';
+        return false;
+      }
+    }
+
+    async function test2_AnonymousListOrders() {
+      log('\n▶ Test 2 — Anonymous user lists /orders (should be DENIED)');
+      try {
+        // Sign out first to ensure no leftover session
+        try { await signOut(auth); } catch {}
+        try {
+          await signInAnonymously(auth);
+          log('   ℹ️  Signed in anonymously (uid=' + auth.currentUser.uid + ')');
+        } catch (e) {
+          log('   <span class="warn">[!!]</span> Anonymous sign-in failed: ' + (e.code || '') + ' ' + (e.message || e));
+          log('   → Anonymous auth may be disabled. That is OK for security; the rule still applies.');
+        }
+
+        const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(5));
+        const snap = await getDocs(q);
+        log('   <span class="err">[FAIL]</span> Anonymous list SUCCEEDED (' + snap.size + ' docs)');
+        log('   → /orders is readable by anonymous users. Rules are either NOT deployed');
+        log('     or the read/list rule is too permissive.');
+        log('     Expected: allow read, list, update, delete: if isAdmin();');
+        results.t2 = 'OPEN';
+        return false;
+      } catch (e) {
+        const msg = e.code || e.message || String(e);
+        if (msg.includes('permission') || msg.includes('PERMISSION_DENIED')) {
+          log('   <span class="ok">[OK]</span> Denied as expected: ' + msg);
+          log('   → Rules are deployed and properly restricting /orders reads.');
+          results.t2 = 'PASS';
+          return true;
+        } else if (msg.includes('offline') || e.code === 'unavailable') {
+          log('   <span class="warn">[!!]</span> Offline: ' + msg);
+          results.t2 = 'OFFLINE';
+          return false;
+        } else {
+          log('   <span class="warn">[!!]</span> Unexpected: ' + msg);
+          results.t2 = 'UNKNOWN';
+          return false;
+        }
+      }
+    }
+
+    async function test3_AnonymousCreateOrder() {
+      log('\n▶ Test 3 — Anonymous create test order with valid shape');
+      try {
+        const { setDoc, serverTimestamp } = await import('https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js');
+        const testId = 'DIAG-' + Date.now();
+        const ref = doc(db, 'orders', testId);
+        await setDoc(ref, {
+          orderId: testId,
+          customerName: 'Diagnose Test',
+          phone: '03000000000',
+          address: 'Diagnose Street',
+          city: 'Faisalabad',
+          quantity: 1,
+          unitPrice: 1000,
+          subtotal: 1000,
+          deliveryCharges: 250,
+          finalTotal: 1250,
+          freeDelivery: false,
+          paymentMethod: 'Cash on Delivery',
+          status: 'New',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        log('   <span class="ok">[OK]</span> Test order created: ' + testId);
+        // Clean it up
+        try {
+          const { deleteDoc } = await import('https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js');
+          await deleteDoc(ref);
+          log('   <span class="info">[i]</span> Test order cleaned up');
+        } catch (ce) {
+          log('   <span class="warn">[!!]</span> Could not clean up test order: ' + (ce.message || ce));
+        }
+        results.t3 = 'PASS';
+        return true;
+      } catch (e) {
+        log('   <span class="err">[FAIL]</span> ' + (e.code || '') + ' ' + (e.message || e));
+        if (e.code === 'permission-denied' || (e.message || '').includes('permission')) {
+          log('   → Rules are blocking order create. Check the create rule matches the order shape above.');
+        }
+        results.t3 = 'FAIL';
+        return false;
+      }
+    }
+
+    async function runAll() {
+      clear();
+      const btn = document.getElementById('run');
+      btn.disabled = true;
+      try {
+        log('▶ Environment');
+        log('   • Project: ' + cfg.projectId);
+        log('   • URL:     ' + location.href);
+        log('   • Time:    ' + new Date().toISOString());
+
+        const connected = await waitForConnection(10000);
+        if (!connected) {
+          log('\n❌ Cannot continue without Firestore connection.');
+          log('   Possible causes:');
+          log('   1. Network / firewall blocking firestore.googleapis.com');
+          log('   2. Wrong API key or project ID in this page');
+          log('   3. Firestore database not created in this project');
+          log('   → Verify: https://console.firebase.google.com/project/delisoga-6d124/firestore');
+          return;
+        }
+
+        await test1_SettingsRead();
+        await test2_AnonymousListOrders();
+        await test3_AnonymousCreateOrder();
+
+        log('\n────────────────────────────────────────────');
+        log('Summary:');
+        log('   • Test 1 (settings public read) : ' + (results.t1 || '?'));
+        log('   • Test 2 (orders list restricted): ' + (results.t2 || '?'));
+        log('   • Test 3 (orders create allowed) : ' + (results.t3 || '?'));
+        log('');
+        if (results.t1 === 'PASS' && results.t2 === 'PASS' && results.t3 === 'PASS') {
+          log('✅ All good! Mobile → Firestore → Dashboard should now work.');
+          log('   Place a real order from mobile (Incognito mode) and verify.');
+        } else {
+          log('⚠️  Issues found. Re-check Firebase Console → Firestore → Rules.');
+        }
+      } catch (e) {
+        log('\n❌ FATAL: ' + (e.code || '') + ' ' + (e.message || e));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('run').onclick = runAll;
+    document.getElementById('retry').onclick = async () => {
+      log('\n\n⟳ RETRY');
+      if (results.t1 !== 'PASS') await test1_SettingsRead();
+      if (results.t2 !== 'PASS') await test2_AnonymousListOrders();
+      if (results.t3 !== 'PASS') await test3_AnonymousCreateOrder();
+    };
+  </script>
+</body>
+</html>
